@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 / 注册 — 漫域 MangaZone</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 12px; color: var(--muted); font-size: 12px; }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="wrap" style="max-width:420px">
+    <div class="panel">
+      <div class="tabs">
+        <div class="tab on" id="tab-login">登录</div>
+        <div class="tab" id="tab-register">注册</div>
+      </div>
+
+      <div id="form-area">
+        <label id="lab-account">用户名</label>
+        <input id="f-account" maxlength="40" placeholder="2-30 个字符" autocomplete="username">
+        <label>密码</label>
+        <input id="f-password" type="password" placeholder="至少 6 位" autocomplete="current-password">
+        <input id="f-nickname" maxlength="30" placeholder="昵称（选填）" hidden>
+        <div class="row" style="margin-top:18px">
+          <button class="btn primary grow" id="btn-go">登 录</button>
+        </div>
+        <div class="msg" id="msg"></div>
+      </div>
+
+      <div id="fb-area" hidden>
+        <div class="divider">或</div>
+        <div class="row">
+          <button class="btn grow" id="btn-google">用 Google 账号登录</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn grow" id="btn-anon">以游客身份逛逛</button>
+        </div>
+        <p class="hint">游客只能浏览和阅读，发弹幕、上传漫画、加好友需注册。</p>
+      </div>
+
+      <p class="hint" id="legacy-toggle" hidden>
+        <a href="#" id="link-legacy">使用旧版用户名密码登录</a>
+      </p>
+    </div>
+  </main>
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    let mode = "login";
+    let fbOn = false;      // Firebase 邮箱登录是否可用（前端配置 + 服务端开关都就绪）
+    let legacy = false;    // true = 走自建用户名密码
+    let fb = null;
+    const next = new URLSearchParams(location.search).get("next") || "/";
+    const msg = document.getElementById("msg");
+    const el = (id) => document.getElementById(id);
+
+    function setMode(m) {
+      mode = m;
+      el("tab-login").classList.toggle("on", m === "login");
+      el("tab-register").classList.toggle("on", m === "register");
+      el("btn-go").textContent = m === "login" ? "登 录" : "注 册";
+      el("f-nickname").hidden = !(fbOn && m === "register");
+      el("lab-account").textContent = (!fbOn || legacy) ? "用户名" : "邮箱";
+      el("f-account").placeholder = (!fbOn || legacy)
+        ? "2-30 个字符"
+        : (m === "login" ? "you@example.com" : "you@example.com");
+      el("f-account").type = (!fbOn || legacy) ? "text" : "email";
+    }
+
+    function useLegacy(on) {
+      legacy = on;
+      el("link-legacy").textContent = on ? "改用邮箱登录" : "使用旧版用户名密码登录";
+      setMode(mode);
+    }
+
+    async function submit() {
+      const account = el("f-account").value;
+      const password = el("f-password").value;
+      if (!fbOn || legacy) {
+        return await apiPost(mode === "login" ? "/api/login" : "/api/register", { username: account, password });
+      }
+      const nickname = el("f-nickname").value.trim();
+      if (mode === "login") return await fb.signInWithEmail(account, password);
+      return await fb.signUpWithEmail(account, password, nickname);
+    }
+
+    function done(profile) {
+      msg.className = "msg ok";
+      msg.textContent = profile?.anonymous ? "已进入游客模式，浏览愉快～" : "成功，跳转中…";
+      setTimeout(() => { location.href = next; }, 300);
+    }
+
+    el("tab-login").onclick = () => setMode("login");
+    el("tab-register").onclick = () => setMode("register");
+    el("link-legacy").onclick = (e) => { e.preventDefault(); useLegacy(!legacy); };
+
+    el("btn-go").onclick = async () => {
+      msg.className = "msg"; msg.textContent = "提交中…";
+      el("btn-go").disabled = true;
+      try {
+        done(await submit());
+      } catch (e) {
+        msg.textContent = e.message; msg.className = "msg err";
+        el("btn-go").disabled = false;
+      }
+    };
+
+    async function oauth(handler, btn) {
+      msg.className = "msg"; msg.textContent = "跳转中…";
+      btn.disabled = true;
+      try {
+        done(await handler());
+      } catch (e) {
+        msg.textContent = e.message; msg.className = "msg err";
+      } finally { btn.disabled = false; }
+    }
+
+    (async () => {
+      initHeader();
+      setMode("login");
+      if (!window.FIREBASE_CONFIGURED?.()) return;
+      let server;
+      try { server = await req("/api/auth/firebase/config"); } catch { return; }
+      if (!server.enabled) {
+        msg.className = "msg";
+        msg.textContent = "服务端尚未配置 Firebase，暂用用户名密码登录。";
+        return;
+      }
+      try { fb = await import("/js/firebase-auth.js"); } catch (e) { return; }
+      fbOn = true;
+      el("lab-account").textContent = "邮箱";
+      el("legacy-toggle").hidden = false;
+      el("fb-area").hidden = false;
+      el("f-account").value = "";
+      setMode(mode);
+      el("btn-google").onclick = (e) => oauth(fb.signInWithGoogle, e.currentTarget);
+      el("btn-anon").onclick = (e) => oauth(fb.signInAnonymously, e.currentTarget);
+    })();
+  </script>
+</body>
+</html>

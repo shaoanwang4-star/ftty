@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>漫域 MangaZone — 原创漫画书城</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="wrap">
+    <h1>原创漫画书城</h1>
+    <p class="muted">来自社区作者的原创作品 · 支持付费解锁与弹幕互动</p>
+    <div class="grid" id="grid"><p class="muted">加载中…</p></div>
+    <p class="footer-note">原型演示 · 支付为模拟流程 · 网页端无法真正阻止系统级截图，阅读页采用个性化水印防护</p>
+  </main>
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    (async () => {
+      await initHeader("store");
+      const { comics } = await req("/api/comics");
+      const grid = document.getElementById("grid");
+      if (comics.length === 0) {
+        grid.innerHTML = `<p class="muted">还没有作品。去 <a href="/dashboard">创作后台</a> 上传第一部漫画吧！</p>`;
+        return;
+      }
+      grid.innerHTML = comics.map((c) => `
+        <a class="comic-card" href="/comic?id=${c.id}">
+          ${c.cover
+            ? `<img class="cover" src="/api/img/${esc(c.cover)}" alt="${esc(c.title)}" loading="lazy">`
+            : `<div class="cover cover-ph">📖</div>`}
+          <div class="info">
+            <div class="title">${esc(c.title)}</div>
+            <div class="meta">
+              <span>${esc(c.owner_name)} · ${c.chapter_count} 话</span>
+              <span class="badge ${c.price_cents > 0 ? "paid" : "free"}">${fmtPrice(c.price_cents)}</span>
+            </div>
+          </div>
+        </a>`).join("");
+      grid.addEventListener("contextmenu", (e) => e.preventDefault());
+    })().catch((e) => { document.getElementById("grid").textContent = "加载失败: " + e.message; });
+  </script>
+</body>
+</html>

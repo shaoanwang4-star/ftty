@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>漫画详情 — 漫域 MangaZone</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="wrap" id="main"><p class="muted">加载中…</p></main>
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    (async () => {
+      await initHeader("store");
+      const id = Number(new URLSearchParams(location.search).get("id"));
+      const d = await req(`/api/comics/${id}`);
+      const c = d.comic;
+      const main = document.getElementById("main");
+      main.innerHTML = `
+        <div class="panel row" style="align-items:flex-start;gap:24px">
+          ${c.cover_key
+            ? `<img src="/api/img/${esc(c.cover_key)}" style="width:220px;border-radius:10px" alt="">`
+            : `<div style="width:220px;height:293px;background:var(--bg2);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:50px">📖</div>`}
+          <div style="flex:1;min-width:260px">
+            <h1 style="margin-bottom:6px">${esc(c.title)}</h1>
+            <p class="muted">作者：<a href="/user?id=${d.owner?.id}">${esc(d.owner?.username || "")}</a>
+              <span id="owner-rel">${d.isOwner || !d.owner ? "" : friendButtonHtml(d.owner.id, d.ownerRelationship)}</span>
+              · ${esc(c.created_at || "")}</p>
+            <p style="white-space:pre-wrap">${esc(c.description || "（暂无简介）")}</p>
+            <div class="row" style="margin-top:14px">
+              <span class="badge ${c.price_cents > 0 ? "paid" : "free"}">${fmtPrice(c.price_cents)}</span>
+              ${d.unlocked
+                ? `<span class="msg ok">已解锁全部章节</span>`
+                : (c.price_cents > 0
+                    ? `<button class="btn primary" id="btn-buy">付费解锁全本</button><span class="muted" style="font-size:12px">前 ${d.previewPages} 页免费试读</span>`
+                    : "")}
+              ${d.isOwner ? `<a class="btn" href="/dashboard?comic=${c.id}">管理本作</a>` : ""}
+            </div>
+          </div>
+        </div>
+        <h2>章节目录（${d.chapters.length} 话）</h2>
+        <div class="panel" id="chapters"></div>`;
+      const chEl = document.getElementById("chapters");
+      if (d.chapters.length === 0) {
+        chEl.innerHTML = `<p class="muted">作者还没有上传章节</p>`;
+      } else {
+        chEl.innerHTML = d.chapters.map((ch) => `
+          <div class="list-row">
+            <div class="grow"><b>第 ${ch.num} 话</b> ${esc(ch.title)} <span class="muted">· ${ch.page_count} 页</span></div>
+            <a class="btn small" href="/reader?ch=${ch.id}">${ch.page_count > 0 ? "阅读" : "暂无内容"}</a>
+          </div>`).join("");
+      }
+      bindFriendButtons(document.getElementById("owner-rel"), () => location.reload());
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
+      const btnBuy = document.getElementById("btn-buy");
+      if (btnBuy) btnBuy.onclick = async () => {
+        if (!needLogin()) return;
+        btnBuy.disabled = true;
+        const ok = await purchaseDialog(c.id, c.title, c.price_cents);
+        if (ok) location.reload(); else btnBuy.disabled = false;
+      };
+    })().catch((e) => { document.getElementById("main").textContent = "加载失败: " + e.message; });
+  </script>
+</body>
+</html>

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>创作后台 — 漫域 MangaZone</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="wrap">
+    <h1>创作后台</h1>
+
+    <div class="panel">
+      <h2 style="margin-top:0">创建新漫画</h2>
+      <label>标题</label>
+      <input id="n-title" maxlength="80" placeholder="漫画标题">
+      <label>简介</label>
+      <textarea id="n-desc" placeholder="作品介绍"></textarea>
+      <div class="row">
+        <div style="flex:1"><label>解锁价格（元，0 = 免费）</label><input id="n-price" type="number" min="0" step="0.01" value="0"></div>
+        <div style="flex:1"><label>上架状态</label>
+          <select id="n-pub"><option value="1">立即发布</option><option value="0">存为草稿</option></select></div>
+      </div>
+      <div class="row" style="margin-top:16px"><button class="btn primary" id="btn-create">创建</button></div>
+      <div class="msg" id="create-msg"></div>
+    </div>
+
+    <h2>我的漫画</h2>
+    <div class="panel" id="my-list"><p class="muted">加载中…</p></div>
+
+    <div id="detail"></div>
+  </main>
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    let myComics = [];
+    let openComicId = null;
+
+    async function loadList() {
+      const { comics } = await req("/api/comics?mine=1");
+      myComics = comics;
+      const el = document.getElementById("my-list");
+      if (!comics.length) { el.innerHTML = `<p class="muted">还没有作品，先创建一部吧</p>`; return; }
+      el.innerHTML = comics.map((c) => `
+        <div class="list-row">
+          <div class="grow"><b>${esc(c.title)}</b>
+            <span class="badge ${c.published ? "free" : ""}" style="margin-left:8px">${c.published ? "已发布" : "草稿"}</span>
+            <div class="muted" style="font-size:12px">${c.chapter_count} 话 · ${fmtPrice(c.price_cents)}${c.price_cents > 0 ? "（前3页试读）" : ""}</div>
+          </div>
+          <button class="btn small" data-open="${c.id}">管理</button>
+          <a class="btn small" href="/comic?id=${c.id}">前台页</a>
+        </div>`).join("");
+      el.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openDetail(Number(b.dataset.open)));
+    }
+
+    async function openDetail(id) {
+      openComicId = id;
+      const d = await req(`/api/comics/${id}`);
+      const c = d.comic;
+      const el = document.getElementById("detail");
+      el.innerHTML = `
+        <h2>《${esc(c.title)}》管理</h2>
+        <div class="panel">
+          <div class="row" style="align-items:flex-start">
+            <div style="width:220px">
+              ${c.cover_key
+                ? `<img src="/api/img/${esc(c.cover_key)}" style="width:220px;border-radius:10px" alt="">`
+                : `<div style="width:220px;height:293px;background:var(--bg2);border-radius:10px;display:flex;align-items:center;justify-content:center">无封面</div>`}
+              <label>上传/更换封面</label><input type="file" id="cover-file" accept="image/*">
+              <button class="btn small" id="btn-cover">上传封面</button>
+            </div>
+            <div style="flex:1;min-width:280px">
+              <label>标题</label><input id="e-title" value="${esc(c.title)}" maxlength="80">
+              <label>简介</label><textarea id="e-desc">${esc(c.description || "")}</textarea>
+              <div class="row">
+                <div style="flex:1"><label>价格（元，0=免费）</label><input id="e-price" type="number" min="0" step="0.01" value="${(c.price_cents / 100).toFixed(2)}"></div>
+                <div style="flex:1"><label>状态</label><select id="e-pub">
+                  <option value="1" ${c.published ? "selected" : ""}>已发布</option>
+                  <option value="0" ${!c.published ? "selected" : ""}>草稿</option></select></div>
+              </div>
+              <div class="row" style="margin-top:16px">
+                <button class="btn primary" id="btn-save">保存修改</button>
+                <button class="btn danger" id="btn-del-comic">删除整部漫画</button>
+              </div>
+              <div class="msg" id="edit-msg"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row"><b style="flex:1">章节（${d.chapters.length}）</b>
+            <input id="n-ch-title" placeholder="新章节标题（可空）" style="max-width:220px">
+            <button class="btn primary" id="btn-add-ch">＋ 新章节</button></div>
+          <div id="ch-list"></div>
+        </div>`;
+
+      const msg = document.getElementById("edit-msg");
+      document.getElementById("btn-save").onclick = async () => {
+        try {
+          await apiPut(`/api/comics/${c.id}`, {
+            title: document.getElementById("e-title").value,
+            description: document.getElementById("e-desc").value,
+            price_cents: Math.round(Number(document.getElementById("e-price").value) * 100) || 0,
+            published: document.getElementById("e-pub").value === "1",
+          });
+          msg.textContent = "已保存"; msg.className = "msg ok";
+          setTimeout(() => location.reload(), 600);
+        } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+      };
+      document.getElementById("btn-del-comic").onclick = async () => {
+        if (!confirm(`确定删除《${c.title}》及全部章节图片？不可恢复`)) return;
+        await apiDel(`/api/comics/${c.id}`);
+        el.innerHTML = ""; openComicId = null; loadList();
+      };
+      document.getElementById("btn-cover").onclick = async () => {
+        const f = document.getElementById("cover-file").files[0];
+        if (!f) { msg.textContent = "先选择图片文件"; msg.className = "msg err"; return; }
+        const fd = new FormData(); fd.append("file", f);
+        try { await req(`/api/comics/${c.id}/cover`, { method: "POST", body: fd }); msg.textContent = "封面已更新"; msg.className = "msg ok"; setTimeout(() => location.reload(), 600); }
+        catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+      };
+      document.getElementById("btn-add-ch").onclick = async () => {
+        try {
+          await apiPost(`/api/comics/${c.id}/chapters`, { title: document.getElementById("n-ch-title").value });
+          openDetail(id);
+        } catch (e) { toast(e.message); }
+      };
+
+      const chEl = document.getElementById("ch-list");
+      if (!d.chapters.length) chEl.innerHTML = `<p class="muted" style="margin-top:12px">还没有章节</p>`;
+      chEl.innerHTML = d.chapters.map((ch) => `
+        <div class="list-row" style="align-items:flex-start">
+          <div class="grow">
+            <b>第 ${ch.num} 话</b> ${esc(ch.title)} <span class="muted">· ${ch.page_count} 页</span>
+            <div id="pages-${ch.id}" class="muted" style="margin-top:6px"></div>
+          </div>
+          <div class="row" style="flex-direction:column;gap:6px;align-items:stretch">
+            <a class="btn small" href="/reader?ch=${ch.id}">阅读</a>
+            <button class="btn small" data-toggle="${ch.id}">管理页面</button>
+            <button class="btn small danger" data-delch="${ch.id}">删章节</button>
+          </div>
+        </div>`).join("");
+
+      chEl.querySelectorAll("[data-delch]").forEach((b) => b.onclick = async () => {
+        if (!confirm("删除该章节及其全部页面图片？")) return;
+        await apiDel(`/api/chapters/${b.dataset.delch}`); openDetail(id);
+      });
+      chEl.querySelectorAll("[data-toggle]").forEach((b) => b.onclick = () => togglePages(Number(b.dataset.toggle)));
+    }
+
+    /** 展开章节页面管理：缩略图 + 删除 + 批量上传 */
+    async function togglePages(chId) {
+      const box = document.getElementById(`pages-${chId}`);
+      if (box.dataset.open) { box.innerHTML = ""; box.dataset.open = ""; return; }
+      box.dataset.open = "1";
+      const d = await req(`/api/chapters/${chId}/reader`);
+      box.innerHTML = `
+        <div class="row" style="flex-wrap:wrap">
+          ${d.pages.map((p) => p.url
+            ? `<div style="position:relative">
+                 <img class="page-thumb" src="${esc(p.url)}" alt="">
+                 <button class="btn small danger" style="position:absolute;top:2px;left:2px;padding:1px 6px" data-delp=${p.id}>×</button>
+                 <span class="badge" style="position:absolute;bottom:2px;right:2px">${p.idx + 1}</span>
+               </div>` : "").join("")}
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input type="file" id="up-${chId}" accept="image/*" multiple style="max-width:320px">
+          <button class="btn primary" data-upload="${chId}">上传到本章末尾</button>
+          <span id="up-msg-${chId}" class="muted"></span>
+        </div>`;
+      box.querySelectorAll("[data-delp]").forEach((b) => b.onclick = async () => {
+        if (!confirm("删除这一页？")) return;
+        await apiDel(`/api/pages/${b.dataset.delp}`); toggleReload(chId);
+      });
+      box.querySelector(`[data-upload="${chId}"]`).onclick = async () => {
+        const files = document.getElementById(`up-${chId}`).files;
+        if (!files.length) return toast("先选择图片文件");
+        const fd = new FormData();
+        for (const f of files) fd.append("files", f);
+        const m = document.getElementById(`up-msg-${chId}`);
+        m.textContent = `上传中 0/${files.length}…`;
+        try {
+          const r = await req(`/api/chapters/${chId}/pages`, { method: "POST", body: fd });
+          m.textContent = `已上传 ${r.added} 页`; toggleReload(chId);
+        } catch (e) { m.textContent = e.message; }
+      };
+    }
+    function toggleReload(chId) { const box = document.getElementById(`pages-${chId}`); box.dataset.open = ""; togglePages(chId); }
+
+    (async () => {
+      await initHeader("dashboard");
+      if (!ME || !ME.id) { location.href = "/login?next=/dashboard"; return; }
+      document.getElementById("btn-create").onclick = async () => {
+        const msg = document.getElementById("create-msg");
+        const title = document.getElementById("n-title").value.trim();
+        if (!title) { msg.textContent = "标题不能为空"; msg.className = "msg err"; return; }
+        try {
+          const r = await apiPost("/api/comics", {
+            title,
+            description: document.getElementById("n-desc").value,
+            price_cents: Math.round(Number(document.getElementById("n-price").value) * 100) || 0,
+            published: document.getElementById("n-pub").value === "1",
+          });
+          msg.textContent = "创建成功"; msg.className = "msg ok";
+          document.getElementById("n-title").value = ""; document.getElementById("n-desc").value = "";
+          await loadList(); openDetail(r.id);
+        } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+      };
+      await loadList();
+      const q = Number(new URLSearchParams(location.search).get("comic"));
+      if (q) openDetail(q);
+    })().catch((e) => toast(e.message));
+  </script>
+</body>
+</html>

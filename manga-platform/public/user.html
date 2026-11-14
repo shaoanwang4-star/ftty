@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>作者主页 — 漫域 MangaZone</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="wrap" id="main"><p class="muted">加载中…</p></main>
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    (async () => {
+      await initHeader("friends");
+      const id = Number(new URLSearchParams(location.search).get("id"));
+      const main = document.getElementById("main");
+      const d = await req(`/api/users/${id}`);
+      main.innerHTML = `
+        <div class="panel">
+          <div class="row" style="align-items:center">
+            <div class="avatar">${esc(d.user.username.slice(0, 1).toUpperCase())}</div>
+            <div class="grow">
+              <h1 style="margin:0">${esc(d.user.username)}</h1>
+              <p class="muted" style="margin:4px 0 0;font-size:13px">注册于 ${esc((d.user.created_at || "").slice(0, 10))} · ${d.comics.length} 部公开作品</p>
+            </div>
+            <div id="rel">${friendButtonHtml(d.user.id, d.relationship)}</div>
+          </div>
+        </div>
+        <h2>TA 的作品</h2>
+        <div class="grid" id="grid"></div>`;
+      const grid = document.getElementById("grid");
+      if (d.comics.length === 0) {
+        grid.innerHTML = `<p class="muted">还没有公开作品。</p>`;
+      } else {
+        grid.innerHTML = d.comics.map((c) => `
+          <a class="comic-card" href="/comic?id=${c.id}">
+            ${c.cover ? `<img class="cover" src="/api/img/${esc(c.cover)}" alt="${esc(c.title)}" loading="lazy">` : `<div class="cover cover-ph">📖</div>`}
+            <div class="info">
+              <div class="title">${esc(c.title)}</div>
+              <div class="meta"><span>${c.chapter_count} 话</span>
+                <span class="badge ${c.price_cents > 0 ? "paid" : "free"}">${fmtPrice(c.price_cents)}</span></div>
+            </div>
+          </a>`).join("");
+      }
+      const relBox = document.getElementById("rel");
+      bindFriendButtons(relBox, () => location.reload());
+      main.addEventListener("contextmenu", (e) => e.preventDefault());
+    })().catch((e) => { document.getElementById("main").textContent = "加载失败: " + e.message; });
+  </script>
+</body>
+</html>

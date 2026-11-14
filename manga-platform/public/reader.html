@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>阅读器 — 漫域 MangaZone</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    /* 两层覆盖物必须穿透点击，否则会吃掉翻页热区 */
+    #dm-layer, #watermark { position: fixed; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <header class="reader-topbar">
+    <a class="btn small" id="back-btn">← 返回</a>
+    <div class="grow" id="title"></div>
+    <span class="muted" id="counter"></span>
+    <button class="btn small" id="btn-mode">滚动模式</button>
+    <button class="btn small" id="btn-dm-on">弹幕:开</button>
+  </header>
+
+  <div id="stage-area">
+    <div class="stage" id="stage"></div>
+    <div class="click-zone left" id="zone-l"></div>
+    <div class="click-zone right" id="zone-r"></div>
+  </div>
+
+  <div id="dm-layer"></div>
+  <div id="watermark"></div>
+
+  <div id="dm-bar">
+    <input id="dm-input" maxlength="100" placeholder="发条弹幕吧～（回车发送）">
+    <button class="btn primary" id="dm-send">发送</button>
+  </div>
+
+  <script src="/js/firebase-config.js"></script>
+  <script src="/js/common.js"></script>
+  <script>
+    (async () => {
+      const me = await req("/api/me");
+      ME = me.id ? me : null;
+      const chId = Number(new URLSearchParams(location.search).get("ch"));
+      let data = await req(`/api/chapters/${chId}/reader`);
+      if (data.pages.length === 0) { document.getElementById("stage").innerHTML = `<p class="lock-panel">本话暂无内容</p>`; return; }
+
+      const stage = document.getElementById("stage");
+      const dmLayer = document.getElementById("dm-layer");
+      const params = new URLSearchParams();
+
+      document.getElementById("title").textContent = `${data.chapter.comic_title} · 第${data.chapter.num}话 ${data.chapter.title || ""}`;
+      document.getElementById("back-btn").onclick = () => location.href = `/comic?id=${data.chapter.comic_id}`;
+
+      // ---------- 水印（含账户与时间，可溯源） ----------
+      function buildWatermark() {
+        const wm = document.getElementById("watermark");
+        wm.innerHTML = "";
+        const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        const label = ME ? `${ME.username} #${ME.id}` : "访客";
+        for (let i = 0; i < 40; i++) {
+          const s = document.createElement("span");
+          s.textContent = `${label} · ${stamp} · MangaZone 原创保护`;
+          s.style.left = `${(i % 5) * 25 - 5}%`;
+          s.style.top = `${Math.floor(i / 5) * 13}%`;
+          wm.appendChild(s);
+        }
+      }
+      buildWatermark();
+      setInterval(buildWatermark, 60_000);
+
+      // ---------- 防截图（只能提高门槛，无法阻止系统级截图） ----------
+      document.addEventListener("contextmenu", (e) => e.preventDefault());
+      document.addEventListener("dragstart", (e) => e.preventDefault());
+      document.addEventListener("selectstart", (e) => e.preventDefault());
+      document.addEventListener("keydown", (e) => {
+        const k = e.key.toLowerCase();
+        if ((e.ctrlKey || e.metaKey) && ["s", "p", "c", "u"].includes(k)) {
+          e.preventDefault();
+          toast("已阻止保存/打印/复制 · 水印含你的账户信息");
+        }
+        if (e.key === "F12" || ((e.ctrlKey || e.metaKey) && e.shiftKey && ["i", "j", "c"].includes(k))) {
+          toast("请勿通过开发者工具获取原图 · 作品受原创保护", 3500);
+        }
+        if (e.code === "PrintScreen") {
+          navigator.clipboard?.writeText("MangaZone 原创保护：请勿传播截图").catch(() => {});
+          toast("检测到截屏操作 · 水印可溯源，请尊重作者版权", 3500);
+        }
+      });
+      // 切到后台/失焦常与截屏工具、录屏相关：仅做提醒与水印时间刷新，不做拦截
+      let hiddenAt = null;
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) { hiddenAt = Date.now(); return; }
+        if (hiddenAt && Date.now() - hiddenAt > 1500) {
+          buildWatermark();
+          toast("页面曾切至后台 · 水印已更新，请注意保护作者版权", 3000);
+        }
+        hiddenAt = null;
+      });
+      window.addEventListener("blur", () => buildWatermark());
+
+      // ---------- 阅读状态 ----------
+      let mode = "page"; // page | scroll
+      let cur = 0;                       // 当前页索引（pages 数组下标）
+      let dmOn = true;
+      const pageStart = new Map();       // page_idx -> performance.now()
+      const dmCache = new Map();         // page_idx -> items[]
+      const dmSpawned = new Set();
+      let dmList = [];                   // 当前页弹幕
+      let curPageIdx = data.pages[0].idx;
+
+      function elapsed() { return (performance.now() - (pageStart.get(curPageIdx) ?? performance.now())); }
+
+      function pageImg(p) {
+        if (p.url) {
+          const img = document.createElement("img");
+          img.className = "page-img"; img.src = p.url; img.draggable = false;
+          img.dataset.arrIdx = p._arr;
+          return img;
+        }
+        const d = document.createElement("div");
+        d.className = "lock-panel";
+        d.innerHTML = `
+          <div class="lock-icon">🔒</div>
+          <p>本章第 ${p.idx + 1} 页起为付费内容</p>
+          <button class="btn primary" id="buy-in-reader">付费解锁全本</button>`;
+        d.querySelector("#buy-in-reader").onclick = async () => {
+          if (!needLogin()) return;
+          if (await purchaseDialog(data.chapter.comic_id, data.chapter.comic_title, data.price_cents)) {
+            data = await req(`/api/chapters/${chId}/reader`);
+            renderAll();
+          }
+        };
+        return d;
+      }
+
+      // ---------- 渲染 ----------
+      function renderAll() {
+        data.pages.forEach((p, i) => p._arr = i);
+        curPageIdx = data.pages[cur].idx;
+        if (mode === "page") {
+          document.body.classList.remove("scroll-mode");
+          stage.innerHTML = "";
+          stage.appendChild(pageImg(data.pages[cur]));
+          document.getElementById("zone-l").style.display = "";
+          document.getElementById("zone-r").style.display = "";
+        } else {
+          document.body.classList.add("scroll-mode");
+          stage.innerHTML = "";
+          data.pages.forEach((p) => stage.appendChild(pageImg(p)));
+          document.getElementById("zone-l").style.display = "none";
+          document.getElementById("zone-r").style.display = "none";
+        }
+        updateCounter();
+      }
+      function updateCounter() {
+        document.getElementById("counter").textContent = `${cur + 1} / ${data.pages.length} · 第${data.pages[cur] ? data.pages[cur].idx + 1 : "?"}页`;
+      }
+
+      function go(delta) {
+        const n = Math.min(Math.max(cur + delta, 0), data.pages.length - 1);
+        if (n === cur) return;
+        cur = n;
+        if (mode === "page") { renderAll(); }
+        else { stage.querySelectorAll("img.page-img")[cur]?.scrollIntoView({ block: "center" }); }
+        loadPageDanmaku();
+      }
+      document.getElementById("zone-r").onclick = () => go(1);
+      document.getElementById("zone-l").onclick = () => go(-1);
+      document.getElementById("btn-mode").onclick = (e) => {
+        mode = mode === "page" ? "scroll" : "page";
+        e.target.textContent = mode === "page" ? "滚动模式" : "翻页模式";
+        renderAll(); loadPageDanmaku();
+      };
+      document.getElementById("btn-dm-on").onclick = (e) => {
+        dmOn = !dmOn;
+        e.target.textContent = `弹幕:${dmOn ? "开" : "关"}`;
+        dmLayer.style.visibility = dmOn ? "" : "hidden";
+      };
+      document.addEventListener("keydown", (e) => {
+        if (e.target.tagName === "INPUT") return;
+        if (e.key === "ArrowRight" || e.key === " ") go(1);
+        if (e.key === "ArrowLeft") go(-1);
+      });
+
+      // 滚动模式：根据视口中线判定当前页
+      let raf = null;
+      window.addEventListener("scroll", () => {
+        if (mode !== "scroll" || raf) return;
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          const imgs = [...stage.querySelectorAll("img.page-img")];
+          const mid = innerHeight / 2;
+          let best = 0;
+          imgs.forEach((im, i) => { const r = im.getBoundingClientRect(); if (r.top <= mid && r.bottom > 40) best = Number(im.dataset.arrIdx); });
+          if (best !== cur) { cur = best; updateCounter(); loadPageDanmaku(); }
+        });
+      }, { passive: true });
+
+      // ---------- 弹幕引擎 ----------
+      async function loadPageDanmaku() {
+        curPageIdx = data.pages[cur]?.idx ?? 0;
+        pageStart.set(curPageIdx, performance.now());
+        if (!dmCache.has(curPageIdx)) {
+          try {
+            const d = await req(`/api/danmaku?chapterId=${chId}&pageIdx=${curPageIdx}`);
+            dmCache.set(curPageIdx, d.danmaku);
+          } catch { dmCache.set(curPageIdx, []); }
+        }
+        dmList = dmCache.get(curPageIdx);
+      }
+
+      function spawnDm(text) {
+        const el = document.createElement("span");
+        el.className = "dm";
+        el.textContent = text;                 // textContent 渲染，防 XSS
+        el.style.top = `${Math.floor(Math.random() * Math.max(3, Math.floor((innerHeight - 140) / 40))) * 40 + 60}px`;
+        el.style.animationDuration = `${7 + Math.random() * 4}s`;
+        dmLayer.appendChild(el);
+        el.addEventListener("animationend", () => el.remove());
+        if (dmLayer.childElementCount > 60) dmLayer.firstChild.remove();
+      }
+
+      setInterval(() => {
+        if (!dmOn) return;
+        const e = elapsed();
+        for (const d of dmList) {
+          if (!dmSpawned.has(d.id) && d.t_ms <= e) { dmSpawned.add(d.id); spawnDm(d.text); }
+        }
+      }, 250);
+
+      // 每 6 秒拉取当前页新弹幕
+      setInterval(async () => {
+        try {
+          const fresh = await req(`/api/danmaku?chapterId=${chId}&pageIdx=${curPageIdx}`);
+          const cached = dmCache.get(curPageIdx) || [];
+          const known = new Set(cached.map((x) => x.id));
+          for (const f of fresh.danmaku) if (!known.has(f.id)) cached.push(f);
+        } catch {}
+      }, 6000);
+
+      const input = document.getElementById("dm-input");
+      async function sendDm() {
+        const text = input.value.trim();
+        if (!text) return;
+        if (!needLogin()) return;
+        try {
+          const r = await apiPost("/api/danmaku", { chapterId: chId, pageIdx: curPageIdx, tMs: Math.floor(elapsed()), text });
+          dmCache.get(curPageIdx)?.push({ id: "me" + r.id, t_ms: 0, text });
+          input.value = "";
+        } catch (e) { toast(e.message); }
+      }
+      document.getElementById("dm-send").onclick = sendDm;
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendDm(); });
+
+      renderAll();
+      loadPageDanmaku();
+    })().catch((e) => { document.getElementById("stage").innerHTML = `<p class="lock-panel">加载失败：${esc(e.message)}</p>`; });
+  </script>
+</body>
+</html>
